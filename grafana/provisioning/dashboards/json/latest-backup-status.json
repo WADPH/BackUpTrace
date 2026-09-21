@@ -1,0 +1,114 @@
+{
+  "title": "BackUpTrace: Latest Backup Status",
+  "uid": "backuptrace-latest-status",
+  "tags": ["backuptrace"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "source_name",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "backuptrace-postgres" },
+        "query": "SELECT source_name FROM backup_sources WHERE is_active ORDER BY 1;",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": ["All"], "value": ["$__all"] },
+        "sort": 1
+      },
+      {
+        "name": "job_name",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "backuptrace-postgres" },
+        "query": "SELECT DISTINCT job_name FROM backup_events WHERE source_name IN ($source_name) AND job_name IS NOT NULL ORDER BY 1;",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": ["All"], "value": ["$__all"] },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Latest status per source / job",
+      "type": "table",
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "backuptrace-postgres" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "backuptrace-postgres" },
+          "format": "table",
+          "rawSql": "SELECT source_name AS \"Source\", COALESCE(job_name, '(none)') AS \"Job\", status AS \"Status\", file_name AS \"File\", file_size_bytes AS \"Size (bytes)\", event_timestamp AS \"Last Backup\", round(hours_since_backup::numeric, 1) AS \"Hours Since\" FROM latest_backup_status WHERE source_name IN ($source_name) AND (job_name IN ($job_name) OR job_name IS NULL) ORDER BY source_name, job_name;",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 26 },
+              { "color": "red", "value": 48 }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Status" },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "value", "options": { "success": { "color": "green", "index": 0, "text": "success" } } },
+                  { "type": "value", "options": { "warning": { "color": "yellow", "index": 1, "text": "warning" } } },
+                  { "type": "value", "options": { "failed": { "color": "red", "index": 2, "text": "failed" } } }
+                ]
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Hours Since" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "yellow", "value": 26 },
+                    { "color": "red", "value": 48 }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Size (bytes)" },
+            "properties": [
+              { "id": "unit", "value": "bytes" },
+              {
+                "id": "mappings",
+                "value": [
+                  { "type": "special", "options": { "match": "null", "result": { "color": "red", "text": "missing" } } },
+                  { "type": "value", "options": { "0": { "color": "red", "index": 1, "text": "0 (empty!)" } } }
+                ]
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } }
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true }
+    }
+  ]
+}

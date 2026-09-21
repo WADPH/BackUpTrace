@@ -1,0 +1,64 @@
+{
+  "title": "BackUpTrace: Backup Size Trend",
+  "uid": "backuptrace-size-trend",
+  "tags": ["backuptrace"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": { "from": "now-7d", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "source_name",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "backuptrace-postgres" },
+        "query": "SELECT source_name FROM backup_sources WHERE is_active ORDER BY 1;",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": ["All"], "value": ["$__all"] },
+        "sort": 1
+      },
+      {
+        "name": "job_name",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "backuptrace-postgres" },
+        "query": "SELECT DISTINCT job_name FROM backup_events WHERE source_name IN ($source_name) AND job_name IS NOT NULL ORDER BY 1;",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": ["All"], "value": ["$__all"] },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "File size over time",
+      "type": "timeseries",
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "backuptrace-postgres" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "backuptrace-postgres" },
+          "format": "time_series",
+          "rawSql": "SELECT event_timestamp AS \"time\", file_size_bytes AS \"value\", source_name || '/' || COALESCE(job_name, '(none)') AS \"metric\" FROM backup_events WHERE source_name IN ($source_name) AND (job_name IN ($job_name) OR job_name IS NULL) AND $__timeFilter(event_timestamp) ORDER BY 1;",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "spanNulls": false, "pointSize": 5, "showPoints": "auto" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["last", "min", "max"] },
+        "tooltip": { "mode": "multi" }
+      }
+    }
+  ]
+}

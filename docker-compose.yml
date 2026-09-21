@@ -1,0 +1,96 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: backuptrace-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    # Postgres actually listens on this port, both inside the container and
+    # (if the ports: mapping below is uncommented) on the host -- there's no
+    # separate "internal" port anywhere else in this file. Change it in one
+    # place: POSTGRES_PORT in .env.
+    command: ["postgres", "-p", "${POSTGRES_PORT:-5432}"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -p ${POSTGRES_PORT:-5432}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - backuptrace
+    # By default Postgres is NOT reachable from outside the Docker network
+    # (the API is the only thing that talks to it). Uncomment this only if
+    # an EXTERNAL Grafana (not the optional one below, which shares this
+    # network already) needs to connect directly -- and restrict access at
+    # the firewall to that Grafana host's IP, since Postgres has no TLS
+    # configured here. See README.md "Using an external Grafana".
+    ports:
+      - "${POSTGRES_PORT:-5432}:${POSTGRES_PORT:-5432}"
+
+  api:
+    build:
+      context: ./api
+    container_name: backuptrace-api
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      ADMIN_API_KEY: ${ADMIN_API_KEY}
+      MAX_EXTRA_BYTES: ${MAX_EXTRA_BYTES:-16384}
+      API_PORT: ${API_PORT:-8000}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backuptrace
+
+  # ---------------------------------------------------------------------
+  # Grafana is OPTIONAL and disabled by default -- uncomment this whole
+  # block if you want a self-hosted Grafana provisioned automatically with
+  # the Postgres datasource and starter dashboards. If you already run your
+  # own (external) Grafana, leave this commented out and instead add a
+  # Postgres datasource there pointing at this stack's `postgres` service
+  # (see README.md "Using an external Grafana").
+  # ---------------------------------------------------------------------
+  # grafana:
+  #   image: grafana/grafana-oss:latest
+  #   container_name: backuptrace-grafana
+  #   restart: unless-stopped
+  #   environment:
+  #     GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+  #     GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+  #     POSTGRES_DB: ${POSTGRES_DB}
+  #     POSTGRES_USER: ${POSTGRES_USER}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  #   ports:
+  #     - "${GRAFANA_PORT:-3000}:3000"
+  #   volumes:
+  #     - grafana-data:/var/lib/grafana
+  #     - ./grafana/provisioning:/etc/grafana/provisioning:ro
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   networks:
+  #     - backuptrace
+
+networks:
+  backuptrace:
+    driver: bridge
+
+volumes:
+  pgdata:
+  # grafana-data:

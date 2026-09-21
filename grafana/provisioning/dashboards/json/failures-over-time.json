@@ -1,0 +1,67 @@
+{
+  "title": "BackUpTrace: Failures Over Time",
+  "uid": "backuptrace-failures",
+  "tags": ["backuptrace"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5m",
+  "time": { "from": "now-30d", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "source_name",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "backuptrace-postgres" },
+        "query": "SELECT source_name FROM backup_sources WHERE is_active ORDER BY 1;",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": ["All"], "value": ["$__all"] },
+        "sort": 1
+      },
+      {
+        "name": "job_name",
+        "type": "query",
+        "datasource": { "type": "postgres", "uid": "backuptrace-postgres" },
+        "query": "SELECT DISTINCT job_name FROM backup_events WHERE source_name IN ($source_name) AND job_name IS NOT NULL ORDER BY 1;",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": ["All"], "value": ["$__all"] },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Failed / warning events per day, by source",
+      "type": "barchart",
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "backuptrace-postgres" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "backuptrace-postgres" },
+          "format": "time_series",
+          "rawSql": "SELECT date_trunc('day', event_timestamp) AS \"time\", count(*) AS \"value\", source_name AS \"metric\" FROM backup_events WHERE status IN ('failed','warning') AND source_name IN ($source_name) AND (job_name IN ($job_name) OR job_name IS NULL) AND $__timeFilter(event_timestamp) GROUP BY 1, source_name ORDER BY 1;",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "stacking": { "mode": "normal" } },
+          "color": { "mode": "palette-classic" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" },
+        "xTickLabelRotation": 0,
+        "orientation": "auto"
+      }
+    }
+  ]
+}
