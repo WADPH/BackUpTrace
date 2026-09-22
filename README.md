@@ -155,8 +155,13 @@ On first start, Grafana automatically provisions:
 - A **Postgres datasource** pointing at `backuptrace-postgres`
   ([`grafana/provisioning/datasources/datasource.yml`](grafana/provisioning/datasources/datasource.yml)) --
   no manual datasource setup needed.
-- **3 starter dashboards** in a "BackUpTrace" folder
-  ([`grafana/provisioning/dashboards/`](grafana/provisioning/dashboards/)):
+- **Dashboards** in a "BackUpTrace" folder
+  ([`grafana/provisioning/dashboards/`](grafana/provisioning/dashboards/)).
+  Start with the unified one; the other three are the original single-purpose
+  starters, kept as smaller examples to copy from:
+  - **BackUpTrace — Backup Monitoring**
+    ([`backuptrace-overview.json`](grafana/provisioning/dashboards/json/backuptrace-overview.json))
+    -- the main dashboard, see "The main dashboard" below.
   - **BackUpTrace: Latest Backup Status** -- table of the most recent event
     per `(source_name, job_name)`, from the `latest_backup_status` view, with
     threshold-based coloring (green = recent success, red/yellow = failed,
@@ -273,9 +278,68 @@ Either way, the dashboards and datasource are just Postgres queries against
 `backup_events` / `backup_sources` / `latest_backup_status` -- nothing about
 them is specific to the bundled Grafana container.
 
+The main dashboard also carries a `DS` (datasource) variable, so on import you
+can simply pick your Postgres datasource from its dropdown instead of matching
+UIDs at all.
+
+### The main dashboard
+
+[`backuptrace-overview.json`](grafana/provisioning/dashboards/json/backuptrace-overview.json)
+is the one dashboard meant for daily use. Layout:
+
+- **Overview row** -- aggregates every selected source: success rate, failed
+  and warning counts, event count, distinct-file count, jobs tracked,
+  stale-job count, source count; a table of the current status of *every* job
+  (most overdue first, so whatever is broken floats to the top); a
+  success/warning/failed donut; runs-per-day stacked bars; a success-rate bar
+  per source; and two histograms (distribution of backup age, and of reported
+  run times).
+- **One row per source, repeated automatically** -- the row's `repeat` is bound
+  to `$source_name`, so every registered source gets an identical block with
+  no dashboard edits: last run status, success rate, failed/warning counts,
+  event count, time since last backup, a per-job status table, runs-per-day
+  bars, and a backup-size histogram.
+- **Event history row** (at the bottom) -- every individual event inside the
+  time picker's range, newest first, paginated. The tables above answer "what
+  is the state now"; this one answers "what happened during this period".
+
+Everything that grows is query-driven (`GROUP BY` or a repeated row), so a new
+source or job appears on its own. Toolbar variables:
+
+| Variable | Meaning |
+|---|---|
+| `DS` | Which Postgres datasource to query (lets the JSON import anywhere) |
+| `Source` | Which sources to include; also controls which per-source rows render |
+| `Job` | Narrows every panel to specific jobs; `All` by default |
+| `Stale after (hours)` | Fallback staleness threshold, used only for jobs whose source reports no `stale_after_hours` (default 168 = 7 days) |
+
+Three things worth knowing when reading it:
+
+- **Current-state panels ignore the time range.** "Last run", "Last backup",
+  "Jobs tracked", "Stale jobs" and both status tables always show how things
+  stand right now; the rate/percentage panels, both histograms and the event
+  history follow the time picker. Each panel's description says which it is.
+- **Staleness is per job, declared by the source.** Each event may carry
+  `stale_after_hours` (see [API.md](API.md)), so a nightly job can be "late
+  after 2.5 days" while a weekly one is fine until day 8 -- the dashboard
+  compares every job against its own window and shows the result as `Due`
+  (age as a percentage of that window; 100% = exactly at the limit). Jobs
+  whose source reports nothing fall back to the `Stale after (hours)`
+  variable. An earlier attempt to *infer* each job's cadence from its event
+  history was tried and dropped: with only a handful of cycles recorded it
+  produced confident nonsense, such as flagging a 20-hour-old backup as
+  "8x overdue". Declared beats inferred.
+- **"Events" counts API calls, not backups.** One event is one POST. A source
+  that re-reports the same artifact on every poll, or reports twice per run
+  (as the Oxidized hook does, on `node_success` and again on `post_store`),
+  raises this number without any new backup existing. The "Distinct files"
+  tile next to it counts distinct `(job, file_name)` pairs instead, so a large
+  gap between the two means a source is over-reporting. For the same reason the
+  per-source size histogram counts each artifact once, not once per report.
+
 ### Extending dashboards / building new ones
 
-All three starter dashboards use two template variables:
+Every dashboard here is built on the same two template variables:
 
 - `$source_name` -- populated by `SELECT source_name FROM backup_sources WHERE is_active ORDER BY 1;`
 - `$job_name` -- populated by `SELECT DISTINCT job_name FROM backup_events WHERE source_name IN ($source_name) AND job_name IS NOT NULL ORDER BY 1;` (dependent on `$source_name`)
@@ -310,19 +374,47 @@ automatically on first Postgres start via
   never deleted, only deactivated.
 - **`backup_events`**: the single generic facts table for every source
   (`source_name`, `job_name`, `status`, `file_name`, `file_size_bytes`,
-  `duration_seconds`, `event_timestamp`, `received_at`, `extra` JSONB).
+  `duration_seconds`, `stale_after_hours`, `event_timestamp`, `received_at`,
+  `extra` JSONB).
   Indexed on `(source_name, job_name, event_timestamp DESC)` for fast
   "latest per job" lookups, on `event_timestamp` and `status` for
   time/status filtering, and with a GIN index on `extra` for flexible
   querying against source-specific fields.
 - **`latest_backup_status`** (view): most recent event per
   `(source_name, job_name)`, using `DISTINCT ON`, with a computed
-  `hours_since_backup` column. This is the base for the "Latest Backup
-  Status" dashboard and for future staleness alerting.
+  `hours_since_backup` column and the `stale_after_hours` threshold that job
+  last reported. This is the base for the dashboards and for future staleness
+  alerting.
 
 Note: retention/cleanup of old `backup_events` rows and Grafana alerting are
 explicitly out of scope for this build -- nothing here assumes the table
 stays small, so both can be added later without a redesign.
+
+### Migrations
+
+`db/init/` only runs when Postgres initialises an empty data directory, so
+changes to the schema of an **already running** stack live in
+[`db/migrations/`](db/migrations/) and are applied by hand. Each file is
+idempotent and safe to re-run:
+
+```bash
+source .env
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+  -p "$POSTGRES_PORT" -v ON_ERROR_STOP=1 \
+  -f /dev/stdin < db/migrations/001_add_stale_after_hours.sql
+```
+
+`db/init/01_schema.sql` always reflects the current schema, so a fresh
+`docker compose up` needs no migrations at all.
+
+To set a per-job staleness threshold on rows that already exist (sources will
+send it themselves from then on -- see `stale_after_hours` in
+[API.md](API.md)):
+
+```sql
+UPDATE backup_events SET stale_after_hours = 60    -- 2.5 days
+ WHERE source_name = 'my-source' AND job_name ILIKE '%(DailyBackups)%';
+```
 
 ## Local development (without Docker)
 
@@ -342,6 +434,7 @@ uvicorn app.main:app --reload
 docker-compose.yml              # Postgres + API (+ optional Grafana, commented out)
 .env.example                    # All configurable variables, documented
 db/init/01_schema.sql           # Schema: backup_sources, backup_events, latest_backup_status view
+db/migrations/                  # Schema changes for an already-running stack (applied by hand)
 api/                            # FastAPI service
   app/main.py                   # Endpoints: /health, POST+GET /api/v1/backup-events
   app/auth.py                   # API key generation/hashing/verification

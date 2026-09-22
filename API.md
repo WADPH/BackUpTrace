@@ -56,10 +56,34 @@ The main ingestion endpoint. Every backup mechanism reports its outcome here.
 | `file_name` | string | no | Max 500 chars |
 | `file_size_bytes` | integer | no | >= 0 |
 | `duration_seconds` | number | no | >= 0 |
+| `stale_after_hours` | number | no | > 0. How long **this job** may go without a new backup before it counts as stale. See below. |
 | `event_timestamp` | string (ISO 8601) | no | When the backup actually happened. Defaults to `now()` server-side if omitted. |
 | `extra` | object | no | Arbitrary source-specific JSON (vmid, git commit hash, device model, rclone exit code, ...). Limited to 16 KB serialized (configurable via `MAX_EXTRA_BYTES`). |
 
 `received_at` is always set server-side and cannot be supplied by the caller.
+
+### `stale_after_hours` — per-job staleness
+
+Different jobs of the same source can run on different schedules: a nightly
+VM dump is broken after 2 days of silence, while a weekly one is perfectly
+healthy at day 5. So the schedule is declared by the side that actually knows
+it — the source — per `job_name`, on every event:
+
+- **Send it with each event, per job.** A source that backs up daily and
+  weekly jobs sends e.g. `60` (2.5 days) for the daily ones and `192`
+  (8 days) for the weekly ones. The value is in **hours** (the name carries
+  the unit deliberately, like `file_size_bytes` and `duration_seconds`).
+- **It applies to the latest event of that job.** `latest_backup_status`
+  exposes the threshold reported by the most recent event, so changing a
+  schedule just means sending a new value from then on — no migration, no
+  dashboard edit.
+- **Omitting it is fine and means "no opinion".** The column stays `NULL` and
+  consumers apply their own default; the bundled Grafana dashboard falls back
+  to its `Stale after (hours)` variable. Use this when a source's cadence is
+  irregular or unknown.
+
+A value of `0` or a negative number is rejected (`422`) — it would mean
+"stale immediately", which is never what a caller means.
 
 **Example: Proxmox VE backup job**
 
@@ -74,6 +98,7 @@ curl -X POST http://localhost:8000/api/v1/backup-events \
     "file_name": "vzdump-qemu-101-2026_09_17-02_00_01.vma.zst",
     "file_size_bytes": 8589934592,
     "duration_seconds": 612.4,
+    "stale_after_hours": 60,
     "extra": {
       "vmid": 101,
       "storage": "pbs-main",
@@ -99,6 +124,10 @@ curl -X POST http://localhost:8000/api/v1/backup-events \
     }
   }'
 ```
+
+Note this one sends no `stale_after_hours`: Oxidized only stores a new version
+when a config actually changed, so there is no fixed interval to promise. It
+therefore falls back to the consumer's default threshold.
 
 **Example: custom bash + rclone script, reporting a failure**
 
@@ -165,6 +194,16 @@ curl -G http://localhost:8000/api/v1/backup-events \
   yourself wanting one, put the extra fields in `extra` instead.
 - `job_name` is optional -- a source that only ever backs up "itself" (no
   sub-jobs) can omit it.
+- **Report one event per backup run, not one per artifact you can see.** A
+  scanner-style integration that re-POSTs every file it finds on every poll
+  makes `backup_events` grow without bound and inflates every count-based
+  panel (the dashboard's "Events" vs "Distinct files" tiles exist to expose
+  exactly that). Keep track of what you have already reported, or report only
+  files newer than your last run.
+- `stale_after_hours` is per `job_name`, sent on every event -- it is how a
+  source tells consumers what "late" means for that particular job. It became
+  a strict column rather than an `extra` key precisely because dashboards and
+  alerting read it for every source (see the note below).
 - `extra` is unindexed beyond a GIN index on the whole column; do not rely on
   it for values you'll need strict typing or foreign keys on later. If a
   field becomes a first-class citizen for querying/alerting across all

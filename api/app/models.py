@@ -25,6 +25,17 @@ class BackupEventIn(BaseModel):
     file_name: Optional[str] = Field(None, max_length=500)
     file_size_bytes: Optional[int] = Field(None, ge=0)
     duration_seconds: Optional[float] = Field(None, ge=0)
+    stale_after_hours: Optional[float] = Field(
+        None,
+        gt=0,
+        description=(
+            "How many hours this specific job may go without a new backup "
+            "before it should be considered stale. Optional: omit it and "
+            "consumers fall back to their own default (e.g. the Grafana "
+            "dashboard's global threshold). Send it per job_name -- two jobs "
+            "of the same source can have different schedules."
+        ),
+    )
     event_timestamp: Optional[datetime] = Field(
         None, description="ISO 8601. Defaults to now() if omitted."
     )
@@ -56,6 +67,7 @@ class BackupEventOut(BaseModel):
     file_name: Optional[str]
     file_size_bytes: Optional[int]
     duration_seconds: Optional[float]
+    stale_after_hours: Optional[float]
     event_timestamp: datetime
     received_at: datetime
     extra: dict[str, Any]

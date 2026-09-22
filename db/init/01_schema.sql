@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS backup_events (
     file_name           TEXT,
     file_size_bytes     BIGINT,
     duration_seconds    DOUBLE PRECISION,
+    stale_after_hours   DOUBLE PRECISION,
     event_timestamp     TIMESTAMPTZ NOT NULL DEFAULT now(),
     received_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     extra               JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -53,7 +54,9 @@ CREATE TABLE IF NOT EXISTS backup_events (
     CONSTRAINT backup_events_file_size_nonneg
         CHECK (file_size_bytes IS NULL OR file_size_bytes >= 0),
     CONSTRAINT backup_events_duration_nonneg
-        CHECK (duration_seconds IS NULL OR duration_seconds >= 0)
+        CHECK (duration_seconds IS NULL OR duration_seconds >= 0),
+    CONSTRAINT backup_events_stale_after_positive
+        CHECK (stale_after_hours IS NULL OR stale_after_hours > 0)
 );
 
 COMMENT ON TABLE backup_events IS
@@ -69,6 +72,10 @@ COMMENT ON COLUMN backup_events.event_timestamp IS
 COMMENT ON COLUMN backup_events.received_at IS
     'When the API received the event. Always server-set, never trusted from '
     'the caller.';
+COMMENT ON COLUMN backup_events.stale_after_hours IS
+    'Optional per-job staleness threshold in hours, as reported by the source. '
+    'NULL means the source expresses no opinion and consumers should apply '
+    'their own default.';
 
 -- ---------------------------------------------------------------------------
 -- Indexes
@@ -110,6 +117,7 @@ SELECT DISTINCT ON (be.source_name, be.job_name)
     be.file_name,
     be.file_size_bytes,
     be.duration_seconds,
+    be.stale_after_hours,
     be.event_timestamp,
     be.received_at,
     be.extra,
@@ -120,5 +128,6 @@ ORDER BY be.source_name, be.job_name, be.event_timestamp DESC;
 
 COMMENT ON VIEW latest_backup_status IS
     'Most recent backup_events row per (source_name, job_name), with a '
-    'computed hours_since_backup column. Base view for Grafana dashboards '
+    'computed hours_since_backup column and the per-job stale_after_hours '
+    'threshold the source last reported. Base view for Grafana dashboards '
     'and future staleness alerting.';

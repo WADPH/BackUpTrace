@@ -111,14 +111,15 @@ async def create_backup_event(
                 """
                 INSERT INTO backup_events
                     (source_name, job_name, status, file_name, file_size_bytes,
-                     duration_seconds, event_timestamp, extra)
+                     duration_seconds, stale_after_hours, event_timestamp, extra)
                 VALUES
                     (%(source_name)s, %(job_name)s, %(status)s, %(file_name)s,
                      %(file_size_bytes)s, %(duration_seconds)s,
+                     %(stale_after_hours)s,
                      COALESCE(%(event_timestamp)s, now()), %(extra)s)
                 RETURNING id, source_name, job_name, status, file_name,
-                          file_size_bytes, duration_seconds, event_timestamp,
-                          received_at, extra
+                          file_size_bytes, duration_seconds, stale_after_hours,
+                          event_timestamp, received_at, extra
                 """,
                 {
                     "source_name": event.source_name,
@@ -127,6 +128,7 @@ async def create_backup_event(
                     "file_name": event.file_name,
                     "file_size_bytes": event.file_size_bytes,
                     "duration_seconds": event.duration_seconds,
+                    "stale_after_hours": event.stale_after_hours,
                     "event_timestamp": event.event_timestamp,
                     "extra": db.Jsonb(event.extra),
                 },
@@ -197,8 +199,8 @@ async def list_backup_events(
             await cur.execute(
                 f"""
                 SELECT id, source_name, job_name, status, file_name,
-                       file_size_bytes, duration_seconds, event_timestamp,
-                       received_at, extra
+                       file_size_bytes, duration_seconds, stale_after_hours,
+                       event_timestamp, received_at, extra
                 FROM backup_events
                 {where_clause}
                 ORDER BY event_timestamp DESC
