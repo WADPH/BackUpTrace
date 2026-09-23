@@ -6,6 +6,25 @@ scripts, and anything added later). Every backup job reports its outcome to
 one generic HTTP API; results are stored in PostgreSQL and visualized in
 Grafana.
 
+## Contents
+
+- [Architecture](#architecture)
+  - [Components](#components)
+- [Quick start](#quick-start)
+- [Provisioning a new backup source](#provisioning-a-new-backup-source)
+- [Sending a test event via curl](#sending-a-test-event-via-curl)
+- [Supported integrations](#supported-integrations)
+- [Grafana](#grafana)
+  - [Option A: use the built-in Grafana (self-hosted)](#option-a-use-the-built-in-grafana-self-hosted)
+  - [Option B: use your own external Grafana](#option-b-use-your-own-external-grafana)
+  - [The main dashboard](#the-main-dashboard)
+  - [Alerting on stale jobs](#alerting-on-stale-jobs)
+  - [Extending dashboards / building new ones](#extending-dashboards--building-new-ones)
+- [Database schema](#database-schema)
+  - [Migrations](#migrations)
+- [Local development (without Docker)](#local-development-without-docker)
+- [Repository layout](#repository-layout)
+
 ## Architecture
 
 ```
@@ -136,6 +155,23 @@ curl -G http://localhost:8000/api/v1/backup-events \
 ```
 
 Full API contract, all fields, and error responses: [API.md](API.md).
+
+## Supported integrations
+
+Ready-to-deploy reporters live in [`integrations/`](integrations/). Each one is
+a single self-contained script that runs on the machine doing the backups and
+POSTs to the same generic endpoint as everything else.
+
+| Integration | What it reports | Script |
+|---|---|---|
+| **Proxmox VE — vzdump** | One job per (VM/CT, backup storage), with the real on-disk archive size. Reads storages from `pvesh`, scans the actual files rather than parsing task logs, and keeps a state file so a 15-minute timer does not turn one backup into ~96 rows a day | [`integrations/proxmox-vzdump/`](integrations/proxmox-vzdump/backuptrace-vzdump.sh) |
+| **Oxidized** | One job per network device, from an `exec` hook on `node_success`, `node_fail` and `post_store`. Reporting on every successful poll — not only on a commit — is what keeps an unchanged-but-healthy device from looking stale. Optionally a second job per device for exporting its config elsewhere | [`integrations/oxidized/`](integrations/oxidized/backuptrace-report.sh) |
+
+They are conveniences, not requirements. Anything that can send an HTTP POST is
+a valid source, and adding one changes nothing on this side — see
+[`integrations/README.md`](integrations/README.md) for the setup of each and
+for what is worth copying when writing a new one.
+
 
 ## Grafana
 
@@ -570,6 +606,8 @@ api/                            # FastAPI service
   app/models.py                 # Request/response validation
   manage_sources.py             # Source provisioning CLI
 API.md                          # Full API contract + example curl requests
+integrations/                   # Ready-to-deploy reporters (Proxmox vzdump, Oxidized)
+scripts/erase-source-events.sh  # Remove a source's or a single job's events
 grafana/provisioning/           # Datasource + dashboard provisioning (used if built-in Grafana is enabled)
   alerting/                     # Stale-job alert rule, Telegram contact point, message template
 ```
