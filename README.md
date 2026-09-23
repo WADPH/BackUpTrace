@@ -337,6 +337,135 @@ Three things worth knowing when reading it:
   gap between the two means a source is over-reporting. For the same reason the
   per-source size histogram counts each artifact once, not once per report.
 
+### Alerting on stale jobs
+
+Grafana can notify you when a job stops backing up. Everything lives on the
+Grafana side -- no schema change, no API change, nothing new to run. The rule
+reads the same `latest_backup_status` view the dashboard uses.
+
+Ready-made provisioning files:
+
+| File | What it is |
+|---|---|
+| [`grafana/provisioning/alerting/alert-rules.yaml`](grafana/provisioning/alerting/alert-rules.yaml) | the rule itself |
+| [`grafana/provisioning/alerting/contact-points.yaml`](grafana/provisioning/alerting/contact-points.yaml) | Telegram delivery (placeholders for the credentials) |
+| [`grafana/provisioning/alerting/notification-templates.yaml`](grafana/provisioning/alerting/notification-templates.yaml) | the message template |
+
+#### How one rule becomes one alert per job
+
+The rule runs a single query:
+
+```sql
+SELECT
+    source_name,
+    COALESCE(job_name, '(no job)') AS job_name,
+    hours_since_backup / COALESCE(stale_after_hours, 2160) AS overdue_ratio
+FROM latest_backup_status
+```
+
+Returned as a **table**, Grafana turns each row into an independent alert
+instance: the text columns become labels, the numeric column becomes the
+value. The condition is `overdue_ratio IS ABOVE 1`, applied to every row
+separately.
+
+Two properties follow from that, and both are the point of the design:
+
+- **A newly stale job produces its own notification.** Each label set has its
+  own state, so a job crossing the threshold fires even while three others are
+  already firing. A `count(*) > 0` rule -- the obvious first attempt -- cannot
+  do this: it is a single instance that is already in the alerting state, and
+  the next failure changes nothing.
+- **A new source needs no change to the rule.** `overdue_ratio` normalises
+  every job onto one scale, where `1.0` means "exactly at its own window". A
+  nightly job (`stale_after_hours: 60`) and a weekly one (`192`) are both
+  compared against the same `1`.
+
+#### Installing
+
+The contact point is best created by hand so the bot token stays out of the
+repository; the rule and the template are pure configuration.
+
+**1. Contact point.** `Alerting -> Contact points -> Add contact point`,
+integration Telegram. Fill in the bot token and chat id (for a channel it
+starts with `-100`, and the bot must be an administrator of that channel).
+Under *Optional Telegram settings* set:
+
+- **Parse Mode**: `HTML` -- required by the template. Grafana's default is
+  `None`, which prints `<b>` and `<a href>` literally. `Markdown` is not a
+  workaround: an underscore in a job name (`storage5TB_Backup`) breaks
+  Telegram's parser and the message is dropped.
+- **Disable Web Page Preview**: on
+- **Message**: `{{ template "telegram.backuptrace" . }}`
+
+Press **Test** before going further -- it separates "the rule never fired"
+from "Telegram never accepted the message".
+
+**2. Template.** `Alerting -> Contact points -> Notification Templates ->
+Add notification template`, name it `telegram.backuptrace` and paste the
+`template:` body from
+[`notification-templates.yaml`](grafana/provisioning/alerting/notification-templates.yaml).
+
+**3. Rule.** Either provision it:
+
+```bash
+# on the Grafana host
+sudo cp alert-rules.yaml /etc/grafana/provisioning/alerting/
+sudo systemctl restart grafana-server
+```
+
+...which makes it read-only in the UI, or POST it if you want to keep editing
+it there:
+
+```bash
+curl -X POST http://<grafana>/api/v1/provisioning/alert-rules \
+  -H "Authorization: Bearer <service-account-token>" \
+  -H "X-Disable-Provenance: true" \
+  -H "Content-Type: application/json" \
+  -d @rule.json
+```
+
+If your contact point has a different name, change `notification_settings.receiver`
+in the rule to match it -- Grafana matches contact points by name, not by uid.
+
+#### Tuning
+
+| Setting | Where | Note |
+|---|---|---|
+| Evaluation interval | `groups[].interval` | How often Postgres is queried. `5m` is plenty; backup state changes at most daily |
+| Threshold | `conditions[].evaluator.params` | `1` = exactly at each job's own window. `0.8` would warn before the deadline |
+| Global fallback | the `2160` in the SQL | Used only for sources that report no `stale_after_hours`. Keep it aligned with the dashboard's *Stale after (hours)* variable |
+| Re-notification | `notification_settings.repeat_interval` | How often to remind about a job that is *still* stale. Grafana's default `4h` means 6 messages a day per stuck job |
+| Grouping | `notification_settings.group_by` | Must contain `source_name` and `job_name`, otherwise all stale jobs arrive merged into one message |
+
+#### Things that surprise people
+
+- **Saving a rule resets its state.** Every edit resolves the currently firing
+  instances (you get a burst of "resolved" messages) and re-fires them on the
+  next evaluation. Nothing is wrong; it stops once you stop editing. The same
+  mechanism is the cleanest way to force a re-notification on demand: pause the
+  rule, then resume it.
+- **`Sending alerts to local notifier count=4` in the log is not a
+  notification.** It is the scheduler handing current state to the internal
+  Alertmanager, and it repeats every evaluation. Whether a message is actually
+  sent is decided afterwards by the alert's state transition and
+  `repeat_interval`.
+- **Dead jobs alert forever.** A machine that was decommissioned without
+  removing its events stays stale permanently and will be reported at every
+  `repeat_interval`. Fix it, silence it (every notification carries a
+  pre-filled silence link for exactly that job), or delete its events with
+  [`scripts/erase-source-events.sh`](scripts/erase-source-events.sh), which
+  lists a source's jobs and lets you remove individual ones (`stale` selects
+  all stale jobs at once). Once the row leaves the view, the alert resolves
+  itself.
+- **A source that never reported at all is invisible.** The view is built from
+  events, so a source registered with `manage_sources.py` that has never sent
+  anything has no row and cannot be stale. Catching that needs a second rule
+  built on `backup_sources LEFT JOIN backup_events`.
+- **"database is locked" on a SQLite-backed Grafana.** Each evaluation writes
+  state for every instance. With dozens of jobs and a one-minute interval,
+  SQLite starts refusing writes and the alerting UI returns HTTP 500. Raise the
+  interval and set `wal = true` under `[database]` in `grafana.ini`.
+
 ### Extending dashboards / building new ones
 
 Every dashboard here is built on the same two template variables:
@@ -442,4 +571,5 @@ api/                            # FastAPI service
   manage_sources.py             # Source provisioning CLI
 API.md                          # Full API contract + example curl requests
 grafana/provisioning/           # Datasource + dashboard provisioning (used if built-in Grafana is enabled)
+  alerting/                     # Stale-job alert rule, Telegram contact point, message template
 ```

@@ -1,0 +1,26 @@
+# BackUpTrace -- Telegram message template.
+#
+# Referenced from the contact point as: {{ template "telegram.backuptrace" . }}
+# Requires parse_mode: HTML on that contact point.
+#
+# The `range` loop runs once per message as long as job_name is part of the
+# rule's group_by, but it is required: without it the template breaks if the
+# grouping is ever widened.
+apiVersion: 1
+
+templates:
+  - orgId: 1
+    name: telegram.backuptrace
+    template: |
+      {{ define "telegram.backuptrace" }}
+      {{- range .Alerts }}
+      {{- if eq .Status "firing" }}
+      🔴 <b>{{ .Labels.job_name }}</b>
+      {{ .Labels.source_name }} · {{ .Values.A | printf "%.1f" }}× over its backup window
+      <a href="{{ .SilenceURL }}">silence</a>
+      {{- else }}
+      ✅ <b>{{ .Labels.job_name }}</b>
+      {{ .Labels.source_name }} · backups are arriving again
+      {{- end }}
+      {{- end }}
+      {{ end }}

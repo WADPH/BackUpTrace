@@ -1,0 +1,39 @@
+# BackUpTrace -- where alerts are delivered.
+#
+# The credentials below are placeholders. Two ways to use this file:
+#
+#   1. (recommended) Create the contact point in the Grafana UI instead and
+#      keep this file as documentation. The secret then lives only in
+#      Grafana's own database and never touches the repository.
+#   2. Fill in the values on the Grafana host. The file then holds a secret --
+#      do not commit it back.
+#
+# `name` must match `notification_settings.receiver` in alert-rules.yaml.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: BackUpTrace Telegram
+    receivers:
+      - uid: backuptrace-telegram
+        type: telegram
+        settings:
+          bottoken: <TELEGRAM_BOT_TOKEN>
+          # For a channel this starts with -100. The bot must be an
+          # administrator of that channel, otherwise Telegram rejects the
+          # message and Grafana logs "Bad Request: chat not found".
+          chatid: '<TELEGRAM_CHAT_ID>'
+          # HTML is required by the notification template, which uses <b> and
+          # <a href>. With `None` (Grafana's default) the tags are printed
+          # literally, and with `Markdown` any underscore in a job name breaks
+          # Telegram's parser.
+          parse_mode: HTML
+          message: '{{ template "telegram.backuptrace" . }}'
+          # Without this Telegram renders a link preview card for the Grafana
+          # URL under every message.
+          disable_web_page_preview: true
+          # true = deliver silently, without a notification sound.
+          disable_notification: false
+          protect_content: false
+    # false = also send a message when a job starts backing up again.
+    disableResolveMessage: false
